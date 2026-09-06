@@ -1,0 +1,13 @@
+/build/
+/dist/
+/wheelhouse/
+.idea/
+*.pyc
+__pycache__/
+cmake-build-*
+/venv/
+/.venv*/
+*.egg-info/
+*.so
+*.pyd
+.gitnexus

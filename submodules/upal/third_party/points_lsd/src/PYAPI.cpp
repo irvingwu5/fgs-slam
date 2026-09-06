@@ -1,0 +1,639 @@
+// 文件作用：向 Python 暴露批量、距离场和点种子 LSD 接口；隶属于points_lsd Python 绑定模块。
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#include <iostream>
+#include <string>
+#include "lsd.h"
+
+#define STRINGIFY(x) #x
+#define MACRO_STRINGIFY(x) STRINGIFY(x)
+namespace py = pybind11;
+
+// All inputs are copied to C-contiguous, correctly typed buffers before raw pointers are taken.
+using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
+using IntArray = py::array_t<int, py::array::c_style | py::array::forcecast>;
+
+// 函数作用：执行 check_img_format 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - correct_info：correct_info 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - info：info 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - name：name 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+void check_img_format(const py::buffer_info& correct_info, const py::buffer_info& info, std::string name=""){
+  std::stringstream ss;
+  if (info.format != correct_info.format) {
+    ss << "Error: " << name << " array has format \"" << info.format
+       << "\" but the format should be \"" << correct_info.format << "\"";
+    throw py::type_error(ss.str());
+  }
+  if (info.shape.size() != correct_info.shape.size()) {
+    ss << "Error: " << name << " array has " << info.shape.size()
+       << "dimensions but should have " << correct_info.shape.size();
+    throw py::type_error(ss.str());
+  }
+
+  for(int i =0 ; i < info.shape.size() ; i++){
+    if (info.shape[i] != correct_info.shape[i]) {
+      ss << "Error: " << name << " array has " << info.shape[i] << " elements in dimension " << info.shape.size()
+         << " but should have " << correct_info.shape[i];
+      throw py::type_error(ss.str());
+    }
+  }
+}
+
+struct LineSegment
+{
+  double x1, y1, x2, y2, /*width, */ p /*, new_log10_NFA*/;
+};
+
+// Passing in a generic array
+// Passing in an array of doubles
+// 函数作用：执行 run_lsd 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - img：img 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - scale：scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - sigma_scale：sigma_scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - density_th：density_th 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - gradnorm：图像梯度数据。
+//   - gradangle：图像梯度数据。
+//   - grad_nfa：图像梯度数据。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+py::array_t<float> run_lsd(const DoubleArray& img,
+                           double scale=0.8,
+                           double sigma_scale=0.6,
+                           double density_th=0.0, /* Minimal density of region points in rectangle. */
+                           const DoubleArray& gradnorm = DoubleArray(),
+                           const DoubleArray& gradangle = DoubleArray(),
+                           bool grad_nfa = false) {
+  double quant = 2.0;       /* Bound to the quantization error on the
+                                gradient norm.                                */
+  double ang_th = 22.5;     /* Gradient angle tolerance in degrees.           */
+  // double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  double log_eps = 0;
+
+  py::buffer_info info = img.request();
+  if (info.format != "d" && info.format != "B" ) {
+    throw py::type_error("Error: The provided numpy array has the wrong type");
+  }
+
+  double *modgrad_ptr{};
+  double *angles_ptr{};
+  if (gradnorm.size() != 0 ) {
+    py::buffer_info gradnorm_info = gradnorm.request();
+    check_img_format(info, gradnorm_info, "Gradnorm");
+    modgrad_ptr = static_cast<double *>(gradnorm_info.ptr);
+  }
+
+  if (gradangle.size() != 0) {
+    py::buffer_info gradangle_info = gradangle.request();
+    check_img_format(info, gradangle_info, "Gradangle");
+    angles_ptr = static_cast<double *>(gradangle_info.ptr);
+  }
+
+  if (info.shape.size() != 2) {
+    throw py::type_error("Error: You should provide a 2 dimensional array.");
+  }
+
+  double *imagePtr = static_cast<double *>(info.ptr);
+
+  // LSD call. Returns [x1,y1,x2,y2,width,p,-log10(NFA)] for each segment
+  int N;
+  double *out = LineSegmentDetection(
+    &N, imagePtr, info.shape[1], info.shape[0], scale, sigma_scale, quant,
+    ang_th, log_eps, density_th, n_bins, grad_nfa, modgrad_ptr, angles_ptr);
+
+  py::array_t<float> segments({N, 5});
+  for (int i = 0; i < N; i++) {
+    segments[py::make_tuple(i, 0)] = out[7 * i + 0];
+    segments[py::make_tuple(i, 1)] = out[7 * i + 1];
+    segments[py::make_tuple(i, 2)] = out[7 * i + 2];
+    segments[py::make_tuple(i, 3)] = out[7 * i + 3];
+    segments[py::make_tuple(i, 4)] = out[7 * i + 5];
+    // Dropped: width = out[7 * i + 4], -log10(NFA) = out[7 * i + 6]; column 4 above is p.
+  }
+  free((void *) out);
+  return segments;
+}
+
+// 函数作用：执行 run_lsd_opt 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - img：img 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - scale：scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - sigma_scale：sigma_scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - density_th：density_th 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - gradnorm：图像梯度数据。
+//   - gradangle：图像梯度数据。
+//   - grad_nfa：图像梯度数据。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+py::array_t<float> run_lsd_opt(const DoubleArray& img,
+                           double scale=0.8,
+                           double sigma_scale=0.6,
+                           double density_th=0.0, /* Minimal density of region points in rectangle. */
+                           const DoubleArray& gradnorm = DoubleArray(),
+                           const DoubleArray& gradangle = DoubleArray(),
+                           bool grad_nfa = false) {
+  double quant = 2.0;       /* Bound to the quantization error on the
+                                gradient norm.                                */
+  double ang_th = 22.5;     /* Gradient angle tolerance in degrees.           */
+  // double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  double log_eps = 0;
+
+  py::buffer_info info = img.request();
+  if (info.format != "d" && info.format != "B" ) {
+    throw py::type_error("Error: The provided numpy array has the wrong type");
+  }
+
+  double *modgrad_ptr{};
+  double *angles_ptr{};
+  if (gradnorm.size() != 0 ) {
+    py::buffer_info gradnorm_info = gradnorm.request();
+    check_img_format(info, gradnorm_info, "Gradnorm");
+    modgrad_ptr = static_cast<double *>(gradnorm_info.ptr);
+  }
+
+  if (gradangle.size() != 0) {
+    py::buffer_info gradangle_info = gradangle.request();
+    check_img_format(info, gradangle_info, "Gradangle");
+    angles_ptr = static_cast<double *>(gradangle_info.ptr);
+  }
+
+  if (info.shape.size() != 2) {
+    throw py::type_error("Error: You should provide a 2 dimensional array.");
+  }
+
+  double *imagePtr = static_cast<double *>(info.ptr);
+
+  // LSD call. Returns [x1,y1,x2,y2,width,p,-log10(NFA)] for each segment
+  int N;
+  double *out = LineSegmentDetectionOptimal(
+    &N, imagePtr, info.shape[1], info.shape[0], scale, sigma_scale, quant,
+    ang_th, log_eps, density_th, n_bins, grad_nfa, modgrad_ptr, angles_ptr);
+
+  py::array_t<float> segments({N, 5});
+  for (int i = 0; i < N; i++) {
+    segments[py::make_tuple(i, 0)] = out[7 * i + 0];
+    segments[py::make_tuple(i, 1)] = out[7 * i + 1];
+    segments[py::make_tuple(i, 2)] = out[7 * i + 2];
+    segments[py::make_tuple(i, 3)] = out[7 * i + 3];
+    segments[py::make_tuple(i, 4)] = out[7 * i + 5];
+    // Dropped: width = out[7 * i + 4], -log10(NFA) = out[7 * i + 6]; column 4 above is p.
+  }
+  free((void *) out);
+  return segments;
+}
+
+// 函数作用：执行 batched_run_lsd 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - img：img 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - scale：scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - sigma_scale：sigma_scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - density_th：density_th 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - gradnorm：图像梯度数据。
+//   - gradangle：图像梯度数据。
+//   - grad_nfa：图像梯度数据。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+py::list batched_run_lsd(const DoubleArray& img,
+                                   double scale=0.8,
+                                   double sigma_scale=0.6,
+                                   double density_th=0.0, /* Minimal density of region points in rectangle. */
+                                   const DoubleArray& gradnorm = DoubleArray(),
+                                   const DoubleArray& gradangle = DoubleArray(),
+                                   bool grad_nfa = false) {
+  double quant = 2.0;       /* Bound to the quantization error on the
+                                gradient norm.                                */
+  double ang_th = 22.5;     /* Gradient angle tolerance in degrees.           */
+  // double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  double log_eps = 0;
+
+  py::buffer_info info = img.request();
+  if (info.format != "d" && info.format != "B" ) {
+    throw py::type_error("Error: The provided numpy array has the wrong type");
+  }
+
+  double *modgrad_ptr{};
+  double *angles_ptr{};
+  if (gradnorm.size() != 0 ) {
+    py::buffer_info gradnorm_info = gradnorm.request();
+    check_img_format(info, gradnorm_info, "Gradnorm");
+    modgrad_ptr = static_cast<double *>(gradnorm_info.ptr);
+  }
+
+  if (gradangle.size() != 0) {
+    py::buffer_info gradangle_info = gradangle.request();
+    check_img_format(info, gradangle_info, "Gradangle");
+    angles_ptr = static_cast<double *>(gradangle_info.ptr);
+  }
+
+  if (info.shape.size() != 3) {
+    throw py::type_error("Error: You should provide a 3 dimensional array (batch, height, width)");
+  }
+
+  double *imagePtr = static_cast<double *>(info.ptr);
+
+  const size_t batch_size = info.shape[0];
+  const size_t img_size = info.shape[2] * info.shape[1];
+
+  std::vector<std::shared_ptr<std::vector<LineSegment>>> tmp(batch_size);
+
+  #pragma omp parallel for
+  for (int b = 0 ; b < batch_size ; b++){
+    // LSD call. Returns [x1,y1,x2,y2,width,p,-log10(NFA)] for each segment
+    int N;
+    double *out = LineSegmentDetection(
+      &N, imagePtr + b * img_size, info.shape[2], info.shape[1], scale, sigma_scale, quant,
+      ang_th, log_eps, density_th, n_bins, grad_nfa, modgrad_ptr, angles_ptr);
+
+    tmp[b] = std::make_shared< std::vector<LineSegment> >(N);
+    LineSegment * p_data = tmp[b]->data();
+    for (int i = 0; i < N; i++) {
+      p_data->x1 = out[7 * i + 0];
+      p_data->y1 = out[7 * i + 1];
+      p_data->x2 = out[7 * i + 2];
+      p_data->y2 = out[7 * i + 3];
+      p_data->p = out[7 * i + 5];
+      p_data++;
+    }
+    free(out);
+  }
+
+  py::list segments;
+  for (int b = 0; b < batch_size; b++){
+    py::array_t<float> tmp2({int(tmp[b]->size()), 5});
+    for (int i = 0; i < tmp[b]->size(); i++){
+      tmp2[py::make_tuple(i, 0)] = tmp[b]->at(i).x1;
+      tmp2[py::make_tuple(i, 1)] = tmp[b]->at(i).y1;
+      tmp2[py::make_tuple(i, 2)] = tmp[b]->at(i).x2;
+      tmp2[py::make_tuple(i, 3)] = tmp[b]->at(i).y2;
+      tmp2[py::make_tuple(i, 4)] = tmp[b]->at(i).p;
+    }
+    segments.append(tmp2);
+
+  }
+
+  return segments;
+}
+
+// Passing in a generic array
+// Passing in an array of doubles
+// 函数作用：执行 check_points_in_bounds 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - points：指定描述位置或 LSD 种子点。
+//   - number_points：number_points 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - width：width 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - height：height 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+static void check_points_in_bounds(const int *points, int number_points, size_t width, size_t height) {
+  for (int i = 0; i < number_points; i++) {
+    const int x = points[2 * i];
+    const int y = points[2 * i + 1];
+    if (x < 0 || y < 0 || static_cast<size_t>(x) >= width || static_cast<size_t>(y) >= height) {
+      throw py::value_error("Error: seed point (" + std::to_string(x) + ", " + std::to_string(y) +
+                            ") lies outside the image.");
+    }
+  }
+}
+
+// 函数作用：执行 run_lsd_from_points 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - img：img 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - points：指定描述位置或 LSD 种子点。
+//   - scale：scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - sigma_scale：sigma_scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - density_th：density_th 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - gradnorm：图像梯度数据。
+//   - gradangle：图像梯度数据。
+//   - grad_nfa：图像梯度数据。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+py::array_t<float> run_lsd_from_points(const DoubleArray& img,
+  const IntArray& points,
+                           double scale=1.0,
+                           double sigma_scale=0.6,
+                           double density_th=0.0, /* Minimal density of region points in rectangle. */
+                           const DoubleArray& gradnorm = DoubleArray(),
+                           const DoubleArray& gradangle = DoubleArray(),
+                           bool grad_nfa = false) {
+  double quant = 2.0;       /* Bound to the quantization error on the
+                                gradient norm.                                */
+  double ang_th = 22.5;     /* Gradient angle tolerance in degrees.           */
+  // double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  double log_eps = 0;
+
+  py::buffer_info info = img.request();
+  if (info.format != "d" && info.format != "B" ) {
+    throw py::type_error("Error: The provided numpy array has the wrong type");
+  }
+
+  double *modgrad_ptr{};
+  double *angles_ptr{};
+  if (gradnorm.size() != 0 ) {
+    py::buffer_info gradnorm_info = gradnorm.request();
+    check_img_format(info, gradnorm_info, "Gradnorm");
+    modgrad_ptr = static_cast<double *>(gradnorm_info.ptr);
+  }
+
+  if (gradangle.size() != 0) {
+    py::buffer_info gradangle_info = gradangle.request();
+    check_img_format(info, gradangle_info, "Gradangle");
+    angles_ptr = static_cast<double *>(gradangle_info.ptr);
+  }
+
+  if (info.shape.size() != 2) {
+    throw py::type_error("Error: You should provide a 2 dimensional array.");
+  }
+
+  if (grad_nfa) {
+    throw py::value_error("Error: 'grad_nfa' is not supported by lsd_from_points.");
+  }
+  if (modgrad_ptr == nullptr || angles_ptr == nullptr) {
+    throw py::value_error(
+      "Error: lsd_from_points requires explicit 'gradnorm' and 'gradangle' maps "
+      "(float64, same shape as the image, undefined pixels set to -1024.0).");
+  }
+
+  py::buffer_info points_info = points.request();
+  if (points_info.ndim != 2 || points_info.shape[1] != 2) {
+    throw py::type_error("Error: 'points' must be an N x 2 int32 array of (x, y) seeds.");
+  }
+  int number_points = points_info.shape[0];
+  check_points_in_bounds(static_cast<int *>(points_info.ptr), number_points, info.shape[1], info.shape[0]);
+
+  double *imagePtr = static_cast<double *>(info.ptr);
+  int *pointsPtr = static_cast<int *>(points_info.ptr);
+
+  // LSD call. Returns [x1,y1,x2,y2,width,p,-log10(NFA)] for each segment
+  int N;
+  double *out = LineSegmentDetectionFromPoints(
+    &N, imagePtr, info.shape[1], info.shape[0], scale, sigma_scale, quant,
+    ang_th, log_eps, density_th, n_bins, grad_nfa, modgrad_ptr, angles_ptr, pointsPtr, number_points, nullptr, nullptr, nullptr);
+
+  py::array_t<float> segments({N, 5});
+  for (int i = 0; i < N; i++) {
+    segments[py::make_tuple(i, 0)] = out[7 * i + 0];
+    segments[py::make_tuple(i, 1)] = out[7 * i + 1];
+    segments[py::make_tuple(i, 2)] = out[7 * i + 2];
+    segments[py::make_tuple(i, 3)] = out[7 * i + 3];
+    segments[py::make_tuple(i, 4)] = out[7 * i + 5];
+    // Dropped: width = out[7 * i + 4], -log10(NFA) = out[7 * i + 6]; column 4 above is p.
+  }
+  free((void *) out);
+  return segments;
+}
+
+// 函数作用：执行 run_lsd_from_points_learn 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - img：img 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - points：指定描述位置或 LSD 种子点。
+//   - scale：scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - sigma_scale：sigma_scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - density_th：density_th 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - gradnorm：图像梯度数据。
+//   - gradangle：图像梯度数据。
+//   - grad_nfa：图像梯度数据。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+int run_lsd_from_points_learn(const DoubleArray& img,
+  const IntArray& points,
+                           double scale=1.0,
+                           double sigma_scale=0.6,
+                           double density_th=0.0, /* Minimal density of region points in rectangle. */
+                           const DoubleArray& gradnorm = DoubleArray(),
+                           const DoubleArray& gradangle = DoubleArray(),
+                           bool grad_nfa = false) {
+  double quant = 2.0;       /* Bound to the quantization error on the
+                                gradient norm.                                */
+  double ang_th = 22.5;     /* Gradient angle tolerance in degrees.           */
+  // double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  double log_eps = 0;
+
+  py::buffer_info info = img.request();
+  if (info.format != "d" && info.format != "B" ) {
+    throw py::type_error("Error: The provided numpy array has the wrong type");
+  }
+
+  double *modgrad_ptr{};
+  double *angles_ptr{};
+  if (gradnorm.size() != 0 ) {
+    py::buffer_info gradnorm_info = gradnorm.request();
+    check_img_format(info, gradnorm_info, "Gradnorm");
+    modgrad_ptr = static_cast<double *>(gradnorm_info.ptr);
+  }
+
+  if (gradangle.size() != 0) {
+    py::buffer_info gradangle_info = gradangle.request();
+    check_img_format(info, gradangle_info, "Gradangle");
+    angles_ptr = static_cast<double *>(gradangle_info.ptr);
+  }
+
+  if (info.shape.size() != 2) {
+    throw py::type_error("Error: You should provide a 2 dimensional array.");
+  }
+
+  if (grad_nfa) {
+    throw py::value_error("Error: 'grad_nfa' is not supported by lsd_from_points.");
+  }
+  if (modgrad_ptr == nullptr || angles_ptr == nullptr) {
+    throw py::value_error(
+      "Error: lsd_from_points requires explicit 'gradnorm' and 'gradangle' maps "
+      "(float64, same shape as the image, undefined pixels set to -1024.0).");
+  }
+
+  py::buffer_info points_info = points.request();
+  if (points_info.ndim != 2 || points_info.shape[1] != 2) {
+    throw py::type_error("Error: 'points' must be an N x 2 int32 array of (x, y) seeds.");
+  }
+  int number_points = points_info.shape[0];
+  check_points_in_bounds(static_cast<int *>(points_info.ptr), number_points, info.shape[1], info.shape[0]);
+
+  double *imagePtr = static_cast<double *>(info.ptr);
+  int *pointsPtr = static_cast<int *>(points_info.ptr);
+
+  // LSD call. Returns [x1,y1,x2,y2,width,p,-log10(NFA)] for each segment
+  int N;
+  return LineSegmentDetectionFromPointsLearn(
+    &N, imagePtr, info.shape[1], info.shape[0], scale, sigma_scale, quant,
+    ang_th, log_eps, density_th, n_bins, grad_nfa, modgrad_ptr, angles_ptr, pointsPtr, number_points, nullptr, nullptr, nullptr);
+}
+
+// 函数作用：执行 run_lsd_df 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - img：img 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - scale：scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - sigma_scale：sigma_scale 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - density_th：density_th 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - gradnorm：图像梯度数据。
+//   - gradangle：图像梯度数据。
+//   - grad_nfa：图像梯度数据。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+py::array_t<float> run_lsd_df(const DoubleArray& img,
+                           double scale=0.8,
+                           double sigma_scale=0.6,
+                           double density_th=0.0, /* Minimal density of region points in rectangle. */
+                           const DoubleArray& gradnorm = DoubleArray(),
+                           const DoubleArray& gradangle = DoubleArray(),
+                           bool grad_nfa = false) {
+  double quant = 2.0;       /* Bound to the quantization error on the
+                                gradient norm.                                */
+  double ang_th = 22.5;     /* Gradient angle tolerance in degrees.           */
+  // double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  double log_eps = 0;
+
+  py::buffer_info info = img.request();
+  if (info.format != "d" && info.format != "B" ) {
+    throw py::type_error("Error: The provided numpy array has the wrong type");
+  }
+
+  double *modgrad_ptr{};
+  double *angles_ptr{};
+  if (gradnorm.size() != 0 ) {
+    py::buffer_info gradnorm_info = gradnorm.request();
+    check_img_format(info, gradnorm_info, "Gradnorm");
+    modgrad_ptr = static_cast<double *>(gradnorm_info.ptr);
+  }
+
+  if (gradangle.size() != 0) {
+    py::buffer_info gradangle_info = gradangle.request();
+    check_img_format(info, gradangle_info, "Gradangle");
+    angles_ptr = static_cast<double *>(gradangle_info.ptr);
+  }
+
+  if (info.shape.size() != 2) {
+    throw py::type_error("Error: You should provide a 2 dimensional array.");
+  }
+
+  double *imagePtr = static_cast<double *>(info.ptr);
+
+  // LSD call. Returns [x1,y1,x2,y2,width,p,-log10(NFA)] for each segment
+  int N;
+  double *out = LineSegmentDetectionDF(
+    &N, imagePtr, info.shape[1], info.shape[0], scale, sigma_scale, quant,
+    ang_th, log_eps, density_th, n_bins, grad_nfa, modgrad_ptr, angles_ptr);
+
+  py::array_t<float> segments({N, 5});
+  for (int i = 0; i < N; i++) {
+    segments[py::make_tuple(i, 0)] = out[7 * i + 0];
+    segments[py::make_tuple(i, 1)] = out[7 * i + 1];
+    segments[py::make_tuple(i, 2)] = out[7 * i + 2];
+    segments[py::make_tuple(i, 3)] = out[7 * i + 3];
+    segments[py::make_tuple(i, 4)] = out[7 * i + 5];
+    // Dropped: width = out[7 * i + 4], -log10(NFA) = out[7 * i + 6]; column 4 above is p.
+  }
+  free((void *) out);
+  return segments;
+}
+
+
+
+// 函数作用：执行 PYBIND11_MODULE 对应的 LSD 计算、校验或资源操作。
+// 所属模块：points_lsd Python 绑定。
+// 输入：
+//   - points_lsd：points_lsd 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+//   - m：m 所表示的计算输入；具体类型、形状和约束由签名与调用上下文确定。
+// 输出：返回声明类型规定的检测、数值或状态结果；void 函数通过输出参数或资源状态产生结果。
+PYBIND11_MODULE(points_lsd, m) {
+    m.doc() = R"pbdoc(
+        Point-seeded LSD (Line Segment Detector) bindings used by UPAL
+        -----------------------
+
+        .. currentmodule:: points_lsd
+
+        .. autosummary::
+           :toctree: _generate
+
+           lsd
+    )pbdoc";
+
+    m.def("lsd", &run_lsd, R"pbdoc(
+        Computes Line Segment Detection (LSD) in the image.
+    )pbdoc",
+          py::arg("img"),
+          py::arg("scale") = 0.8,
+          py::arg("sigma_scale") = 0.6,
+          py::arg("density_th") = 0.0,
+          py::arg("gradnorm") = py::array(),
+          py::arg("gradangle") = py::array(),
+          py::arg("grad_nfa") = false);
+
+  m.def("batched_lsd", &batched_run_lsd, R"pbdoc(
+        Computes Line Segment Detection (LSD) in the image.
+    )pbdoc",
+      py::arg("img"),
+      py::arg("scale") = 0.8,
+      py::arg("sigma_scale") = 0.6,
+      py::arg("density_th") = 0.0,
+      py::arg("gradnorm") = py::array(),
+      py::arg("gradangle") = py::array(),
+      py::arg("grad_nfa") = false);
+
+
+  m.def("lsd_from_points", &run_lsd_from_points, R"pbdoc(
+      Computes Line Segment Detection (LSD) in the image. Interesting points are given as input
+    )pbdoc",
+    py::arg("img"),
+    py::arg("points"),
+    py::arg("scale") = 1.0,
+    py::arg("sigma_scale") = 0.6,
+    py::arg("density_th") = 0.0,
+    py::arg("gradnorm") = py::array(),
+    py::arg("gradangle") = py::array(),
+    py::arg("grad_nfa") = false);
+
+  m.def("lsd_from_points_learn", &run_lsd_from_points_learn, R"pbdoc(
+      Computes Line Segment Detection (LSD) in the image. Interesting points are given as input
+    )pbdoc",
+    py::arg("img"),
+    py::arg("points"),
+    py::arg("scale") = 1.0,
+    py::arg("sigma_scale") = 0.6,
+    py::arg("density_th") = 0.0,
+    py::arg("gradnorm") = py::array(),
+    py::arg("gradangle") = py::array(),
+    py::arg("grad_nfa") = false);
+
+    m.def("lsd_df", &run_lsd_df, R"pbdoc(
+        Computes Line Segment Detection (LSD) in the image.
+    )pbdoc",
+          py::arg("img"),
+          py::arg("scale") = 0.8,
+          py::arg("sigma_scale") = 0.6,
+          py::arg("density_th") = 0.0,
+          py::arg("gradnorm") = py::array(),
+          py::arg("gradangle") = py::array(),
+          py::arg("grad_nfa") = false);
+
+    m.def("lsd_opt", &run_lsd_opt, R"pbdoc(
+        Computes Line Segment Detection (LSD) in the image with optimal parameters.
+    )pbdoc",
+          py::arg("img"),
+          py::arg("scale") = 0.8,
+          py::arg("sigma_scale") = 0.6,
+          py::arg("density_th") = 0.0,
+          py::arg("gradnorm") = py::array(),
+          py::arg("gradangle") = py::array(),
+          py::arg("grad_nfa") = false);
+
+
+#ifdef VERSION_INFO
+    m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
+#else
+    m.attr("__version__") = "dev";
+#endif
+}
