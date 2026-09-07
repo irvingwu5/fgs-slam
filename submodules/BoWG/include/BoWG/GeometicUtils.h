@@ -13,7 +13,7 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
-
+#include <bitset>
 #include "TemplatedVocabulary.h"
 #include "TemplatedDatabase.h"
 #include "QueryResults.h"
