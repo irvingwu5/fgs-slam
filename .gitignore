@@ -4,3 +4,4 @@ docs
 AGENTS.md
 CLAUDE.md
 __pycache__/
+tests/

@@ -92,8 +92,10 @@ class FGS_SLAM(SLAMParameters):
 
         # 统一的结果子目录：<时间戳>_<数据集名>。tracking / mapping 两个子进程共享同一目录，
         # 因此在这里（入口进程）只计算并创建一次，子进程直接复用 self.output_dir。
-        dataset_name = getattr(self.trajmanager, "which_dataset", None) or os.path.basename(
-            self.dataset_path.rstrip("/"))
+        # 取数据集目录名（如 .../tum/rgbd_dataset_freiburg1_desk 或 .../replica/room0）作为后缀；
+        # 仅当 dataset_path 末尾为空（如路径以 / 结尾）时才回退到数据集类型 tum/replica
+        dataset_name = os.path.basename(self.dataset_path.rstrip("/")) or getattr(
+            self.trajmanager, "which_dataset", None)
         self.output_dir = os.path.join(self.output_path, f"{time.strftime('%Y%m%d-%H%M%S')}_{dataset_name}")
         os.makedirs(self.output_dir, exist_ok=True)
 

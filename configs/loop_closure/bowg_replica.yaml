@@ -1,0 +1,69 @@
+enabled: false
+mode: log_only
+keyframe_source: tracking
+queue_capacity: 8
+queue_policy: block
+
+retrieval:
+  top_k: 5
+  temporal_exclusion: 70
+
+bowg:
+  pattern_path: ../../submodules/BoWG/support_files/brief_pattern.yml
+  vocabulary_path: ../../submodules/BoWG/support_files/brief_k10L6.bin
+  feature_count: 300
+  multi_scale: true
+  multi_scale_levels: 2
+  feature_size: 5.0
+  word_weight_type: 0
+  word_scoring_type: 0
+  word_group_weight_type: 0
+  word_group_scoring_type: 1
+  use_word_groups: true
+  use_distribution: false
+  word_weight: 0.7
+  word_group_weight: 0.3
+  use_temporal_score: true
+  previous_weight_threshold: 0.8
+  temporal_parameter: 6.0
+  similarity_threshold: 0.4
+  temporal_consistency: 0
+  max_intraisland_gap: 3
+  max_distance_between_groups: 1
+  max_distance_between_queries: 1
+  use_native_geometry: false
+  direct_index_geometry: true
+  direct_index_level: 5
+  native_min_feature_points: 12
+  native_max_reprojection_error: 10.0
+  native_ransac_probability: 0.99
+  native_ransac_max_iterations: 300
+  native_max_neighbor_ratio: 0.75
+  min_previous_word_score: 0.005
+  min_previous_word_group_score: 0.005
+  min_previous_distribution_score: 0.003
+
+geometry:
+  depth_trunc_m: 5.0
+  descriptor_ratio: 0.75
+  min_matches: 30
+  min_inliers: 24
+  min_inlier_ratio: 0.5
+  ransac_threshold_m: 0.05
+  ransac_probability: 0.999
+  ransac_max_iterations: 1000
+  min_image_coverage: 0.10
+  max_rotation_deg: 60.0
+  max_translation_m: 5.0
+  use_gicp_refinement: false
+
+backend:
+  enabled: false
+  optimize_every_n_loops: 1
+  huber_delta: 1.0
+  odometry_translation_weight: 100.0
+  odometry_rotation_weight: 100.0
+  loop_translation_weight: 100.0
+  loop_rotation_weight: 100.0
+  max_iterations: 100
+
