@@ -12,63 +12,16 @@
 
 #include "BoWGDetector.h"
 
+#include <algorithm>
+#include <stdexcept>
+
 namespace BoWG{
 
 // 函数作用：执行 BoWGDetector 对应的构造、计算或状态操作。
 // 所属模块：BoW/BoWG 检索。
 // 输入：无。
 // 输出：无返回值；结果通过对象状态、输出参数、文件或控制台产生。
-BoWGDetector::BoWGDetector(void) 
-    : enable_gui(false), frame_delay_ms(0), is_paused(false), db_wg(WG_WEIGHT_TYPE, WG_SCORING_TYPE, W_SCORING_TYPE) 
-{
-    voc = new BriefVocabulary(VOCABULARY_PATH);
-    switch(W_WEIGHT_TYPE)
-    {
-        case DBoW2::TF_IDF:
-            voc->setWeightingType(DBoW2::TF_IDF);
-            break;
-        case DBoW2::TF:
-            voc->setWeightingType(DBoW2::TF);
-            break;
-        case DBoW2::IDF:
-            voc->setWeightingType(DBoW2::IDF);
-            break;
-        case DBoW2::BINARY:
-            voc->setWeightingType(DBoW2::BINARY);
-            break;
-    }
-    
-    switch(W_SCORING_TYPE)
-    {
-        case DBoW2::L1_NORM:
-            voc->setScoringType(DBoW2::L1_NORM);
-            break;
-        case DBoW2::L2_NORM:
-            voc->setScoringType(DBoW2::L2_NORM);
-            break;
-        case DBoW2::CHI_SQUARE:
-            voc->setScoringType(DBoW2::CHI_SQUARE);
-            break;
-        case DBoW2::KL:
-            voc->setScoringType(DBoW2::KL);
-            break;
-        case DBoW2::BHATTACHARYYA:
-            voc->setScoringType(DBoW2::BHATTACHARYYA);
-            break;
-        case DBoW2::DOT_PRODUCT:
-            voc->setScoringType(DBoW2::DOT_PRODUCT);
-            break;
-    }
-
-    if (GEOM_DI)
-        db.setVocabulary(*voc, true, DI_LEVEL);
-    else
-        db.setVocabulary(*voc, false, 0);
-
-    db_wg.min_prev_score = MIN_PREV_W_SCORE;
-    db_wg.min_prev_wg_score = MIN_PREV_WG_SCORE;
-    db_wg.min_prev_dist_score = MIN_PREV_DIST_SCORE;
-}
+BoWGDetector::BoWGDetector(void) : BoWGDetector(false, 0) {}
 
 // 函数作用：执行 BoWGDetector 对应的构造、计算或状态操作。
 // 所属模块：BoW/BoWG 检索。
@@ -76,10 +29,13 @@ BoWGDetector::BoWGDetector(void)
 //   - use_gui：use_gui 所表示的计算输入；具体类型和约束由函数签名及调用上下文确定。
 //   - delay_ms：delay_ms 所表示的计算输入；具体类型和约束由函数签名及调用上下文确定。
 // 输出：无返回值；结果通过对象状态、输出参数、文件或控制台产生。
-BoWGDetector::BoWGDetector(bool use_gui, int delay_ms) 
-    : enable_gui(use_gui), frame_delay_ms(delay_ms), is_paused(false), db_wg(WG_WEIGHT_TYPE, WG_SCORING_TYPE, W_SCORING_TYPE) 
+BoWGDetector::BoWGDetector(bool use_gui, int delay_ms)
+    : db_wg(WG_WEIGHT_TYPE, WG_SCORING_TYPE, W_SCORING_TYPE),
+      enable_gui(use_gui),
+      frame_delay_ms(delay_ms),
+      is_paused(false)
 {
-    voc = new BriefVocabulary(VOCABULARY_PATH);
+    voc.reset(new BriefVocabulary(VOCABULARY_PATH));
     switch(W_WEIGHT_TYPE)
     {
         case DBoW2::TF_IDF:
@@ -140,6 +96,41 @@ BoWGDetector::~BoWGDetector(void)
 {
 }
 
+size_t BoWGDetector::size() const
+{
+    return db.size();
+}
+
+void BoWGDetector::reset()
+{
+    db.clear();
+    db_wg = BoWGDatabase(WG_WEIGHT_TYPE, WG_SCORING_TYPE, W_SCORING_TYPE);
+    db_wg.min_prev_score = MIN_PREV_W_SCORE;
+    db_wg.min_prev_wg_score = MIN_PREV_WG_SCORE;
+    db_wg.min_prev_dist_score = MIN_PREV_DIST_SCORE;
+    map_des.clear();
+    map_kpts.clear();
+    m_image_descriptors.clear();
+    m_image_keys.clear();
+    m_image_wg_keys.clear();
+    display_image.release();
+    is_paused = false;
+}
+
+DetectionResult BoWGDetector::queryThenAdd(
+    const cv::Mat& image_bgr, int top_k, int temporal_exclusion)
+{
+    return processImage(
+        image_bgr, true, top_k, temporal_exclusion, false, nullptr);
+}
+
+void BoWGDetector::image_detect(
+    cv::Mat image, bool is_query, int size, std::vector<int>& cor_row)
+{
+    const int top_k = std::max(1, size - DISLOCAL);
+    processImage(image, is_query, top_k, DISLOCAL, true, &cor_row);
+}
+
 // 函数作用：执行 updateRowVector 对应的构造、计算或状态操作。
 // 所属模块：BoW/BoWG 检索。
 // 输入：
@@ -167,8 +158,26 @@ void BoWGDetector::updateRowVector(std::vector<int>& row_vec, const std::vector<
 //   - size：size 所表示的计算输入；具体类型和约束由函数签名及调用上下文确定。
 //   - cor_row：cor_row 所表示的计算输入；具体类型和约束由函数签名及调用上下文确定。
 // 输出：返回函数声明类型规定的计算结果；若为 void，则通过对象状态或输出参数产生结果。
-void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vector<int> &cor_row)
+DetectionResult BoWGDetector::processImage(
+    const cv::Mat& image,
+    bool should_query,
+    int top_k,
+    int temporal_exclusion,
+    bool run_legacy_acceptance,
+    std::vector<int>* cor_row)
 {
+    if (image.empty() || image.type() != CV_8UC3) {
+        throw std::invalid_argument("image_bgr must be a non-empty CV_8UC3 image");
+    }
+    if (top_k < 1) {
+        throw std::invalid_argument("top_k must be at least 1");
+    }
+    if (temporal_exclusion < 1) {
+        throw std::invalid_argument("temporal_exclusion must be at least 1");
+    }
+
+    const std::chrono::steady_clock::time_point extract_start =
+        std::chrono::steady_clock::now();
     if (enable_gui) {
         char key = cv::waitKey(1);
         if (key == 'p' || key == 'P') {
@@ -184,6 +193,7 @@ void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vec
 
     // ItemID of the keyframe
     BoWG::ItemID kf_iid = db_wg.get_itemId();
+    db_wg.cur_image_id = static_cast<int>(kf_iid);
 
     cv::Mat grayImage;
     cv::cvtColor(image, grayImage, cv::COLOR_BGR2GRAY);
@@ -303,7 +313,12 @@ void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vec
         voc->transform(brief_descriptors, cur_bow_vec, featvec, DI_LEVEL);
     }
 
-    if (is_query)
+    const double extract_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - extract_start).count();
+    DBoW2::QueryResults ret;
+    double query_ms = 0.0;
+    const int max_id = static_cast<int>(kf_iid) - temporal_exclusion;
+    if (should_query && max_id > 0)
     {
         if (enable_gui) {
             char key = cv::waitKey(1);
@@ -314,20 +329,24 @@ void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vec
         }
 
         DBoW2::QueryResults in_ret;
-        DBoW2::QueryResults ret;
-        db.query(brief_descriptors, in_ret, size-DISLOCAL, size-DISLOCAL);
+        const std::chrono::steady_clock::time_point query_start =
+            std::chrono::steady_clock::now();
+        db.query(brief_descriptors, in_ret, top_k, max_id);
 
         if (USE_WG && USE_DISTRIBUTION) {
-            db_wg.query_bowg(in_ret, ret, cur_bow_vec, kf_bowgVector, in_kernel_vec, size-DISLOCAL, size-DISLOCAL, 
+            db_wg.query_bowg(in_ret, ret, cur_bow_vec, kf_bowgVector, in_kernel_vec, top_k, max_id,
                     W_WEIGHT, WG_WEIGHT, USE_TEMPORAL_SCORE, PREV_WEIGHT_TH, TEMPORAL_PARAM);
         }
         else if (USE_WG) {
-            db_wg.query_bowg(in_ret, ret, cur_bow_vec, kf_bowgVector, size-DISLOCAL, size-DISLOCAL, 
+            db_wg.query_bowg(in_ret, ret, cur_bow_vec, kf_bowgVector, top_k, max_id,
                     W_WEIGHT, USE_TEMPORAL_SCORE, PREV_WEIGHT_TH, TEMPORAL_PARAM);
         }
         else {
-            db_wg.query_words(in_ret, ret, cur_bow_vec, size-DISLOCAL, USE_TEMPORAL_SCORE, PREV_WEIGHT_TH, TEMPORAL_PARAM);
+            db_wg.query_words(in_ret, ret, cur_bow_vec, top_k, USE_TEMPORAL_SCORE, PREV_WEIGHT_TH, TEMPORAL_PARAM);
         }
+
+        query_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - query_start).count();
 
         db_wg.res_table[kf_iid] = ret;
 
@@ -347,6 +366,7 @@ void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vec
             db_wg.prev_dist_vec = in_kernel_vec;
         }
 
+        if (run_legacy_acceptance) {
         // positive indices, to record the results
         std::vector<int> positive_indices;
 
@@ -378,7 +398,7 @@ void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vec
                 if (!USE_GEOM) {
                     // if no geometrical checking 
                     positive_indices.push_back(loop_ID);
-                    updateRowVector(cor_row, positive_indices);
+                    updateRowVector(*cor_row, positive_indices);
                 }
                 else {
                     // geometric check to finally determine the loop closure frame
@@ -389,18 +409,19 @@ void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vec
                         if (isGeometricallyConsistent_DI<DVision::BRIEF::bitset, FBrief>(m_fsolver,db,m_image_descriptors,m_image_keys,best_entry_id,
                                 keypoints,brief_descriptors,featvec,MIN_FPOINTS,MAX_REPROJECTION_ERROR,RANSAC_PROBABILITY,MAX_RANSAC_ITERATIONS,MAX_NEIGHBOR_RATIO)){
                             positive_indices.push_back(loop_ID);
-                            updateRowVector(cor_row, positive_indices);
+                            updateRowVector(*cor_row, positive_indices);
                         }
                     }
                     else {
                         std::vector<cv::DMatch> inlierMatches;
                         if (isGeometricallyConsistent_Exhaustive(map_des[kf_iid],map_kpts[kf_iid],map_des[loop_ID],map_kpts[loop_ID],inlierMatches,MIN_FPOINTS)){
                             positive_indices.push_back(loop_ID);
-                            updateRowVector(cor_row, positive_indices);
+                            updateRowVector(*cor_row, positive_indices);
                         }
                     }
                 }
             }
+        }
         }
     }
     else
@@ -420,6 +441,32 @@ void BoWGDetector::image_detect(cv::Mat image, bool is_query, int size, std::vec
             db_wg.prev_dist_vec = in_kernel_vec;
         }
     }
+
+    DetectionResult result;
+    result.entry_id = kf_iid;
+    result.features.keypoints = keypoints;
+    result.features.descriptors = brief_descriptors;
+    result.extract_ms = extract_ms;
+    result.query_ms = query_ms;
+    result.candidates.reserve(ret.size());
+    for (const DBoW2::Result& item : ret) {
+        Candidate candidate;
+        candidate.entry_id = item.Id;
+        candidate.score = item.Score;
+        result.candidates.push_back(candidate);
+    }
+    std::sort(
+        result.candidates.begin(), result.candidates.end(),
+        [](const Candidate& lhs, const Candidate& rhs) {
+            if (lhs.score != rhs.score) {
+                return lhs.score > rhs.score;
+            }
+            return lhs.entry_id < rhs.entry_id;
+        });
+    if (result.candidates.size() > static_cast<size_t>(top_k)) {
+        result.candidates.resize(static_cast<size_t>(top_k));
+    }
+    return result;
 }
 
 // 函数作用：保存 saveResults 对应的数据或状态。

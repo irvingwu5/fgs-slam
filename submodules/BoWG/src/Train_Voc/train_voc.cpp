@@ -106,12 +106,23 @@ int main(int argc, char** argv) {
     string imageFolder = argv[1];
     string vocabularyPath = argv[2];
 
-    vector<string> imagePaths;
-    glob(imageFolder + "/*.png", imagePaths);
+//    vector<string> imagePaths;
+//    glob(imageFolder + "/*.png", imagePaths);
+//
+//    if (imagePaths.empty()) {
+//        cerr << "No images found in folder: " << imageFolder << endl;
+//        return -1;
+//    }
+//
+//    trainFeatureExtractor(imagePaths, vocabularyPath);
+    vector<cv::String> cvImagePaths;
+    glob(imageFolder + "/*.png", cvImagePaths);
 
-    if (imagePaths.empty()) {
-        cerr << "No images found in folder: " << imageFolder << endl;
-        return -1;
+    vector<string> imagePaths;
+    imagePaths.reserve(cvImagePaths.size());
+
+    for (const cv::String& path : cvImagePaths) {
+        imagePaths.emplace_back(path.c_str());
     }
 
     trainFeatureExtractor(imagePaths, vocabularyPath);

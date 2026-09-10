@@ -2,6 +2,8 @@
 cmake_minimum_required(VERSION 3.0)
 project(BoWG)
 
+include(CTest)
+
 include(ExternalProject)
 option(BUILD_BOWG "Build BoWG" ON)  
 option(BUILD_DETECTOR "Build detector application" ON)
@@ -123,6 +125,15 @@ if(BUILD_DETECTOR)
   target_link_libraries(demo ${PROJECT_NAME} ${OpenCV_LIBS})
   set_target_properties(demo PROPERTIES CXX_STANDARD 11)
 endif(BUILD_DETECTOR)
+
+if(BUILD_TESTING AND BUILD_BOWG)
+  add_executable(test_bowg_facade ../../tests/cpp/test_bowg_facade.cpp)
+  target_link_libraries(test_bowg_facade ${PROJECT_NAME} ${OpenCV_LIBS})
+  target_compile_definitions(test_bowg_facade PRIVATE
+    BOWG_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  set_target_properties(test_bowg_facade PROPERTIES CXX_STANDARD 11)
+  add_test(NAME bowg_facade COMMAND test_bowg_facade)
+endif()
 
 # Installation
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_PREFIX}/lib)

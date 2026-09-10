@@ -20,9 +20,28 @@
 #include <opencv2/features2d.hpp>
 #include <chrono>
 #include <fstream>
+#include <memory>
 #include <thread>
 
 namespace BoWG {
+
+struct Candidate {
+    ItemID entry_id;
+    double score;
+};
+
+struct FrameFeatures {
+    std::vector<cv::KeyPoint> keypoints;
+    std::vector<BRIEF::bitset> descriptors;
+};
+
+struct DetectionResult {
+    ItemID entry_id;
+    std::vector<Candidate> candidates;
+    FrameFeatures features;
+    double extract_ms;
+    double query_ms;
+};
 
 class BoWGDetector 
 {
@@ -42,7 +61,7 @@ public:
 //   - use_gui：use_gui 所表示的计算输入；具体类型和约束由函数签名及调用上下文确定。
 //   - delay_ms：delay_ms 所表示的计算输入；具体类型和约束由函数签名及调用上下文确定。
 // 输出：无返回值；结果通过对象状态、输出参数、文件或控制台产生。
-    BoWGDetector(bool use_gui = false, int delay_ms = 0);
+    BoWGDetector(bool use_gui, int delay_ms);
 
     /**
     * Destructor of BoWGDetector
@@ -72,6 +91,11 @@ public:
 //   - cor_row：cor_row 所表示的计算输入；具体类型和约束由函数签名及调用上下文确定。
 // 输出：返回函数声明类型规定的计算结果；若为 void，则通过对象状态或输出参数产生结果。
     void image_detect(cv::Mat image, bool is_query, int size, std::vector<int> &cor_row);
+
+    DetectionResult queryThenAdd(
+        const cv::Mat& image_bgr, int top_k, int temporal_exclusion);
+    size_t size() const;
+    void reset();
 
     // Used to generate the final result matrix
 // 函数作用：保存 saveResults 对应的数据或状态。
@@ -133,7 +157,7 @@ public:
     void waitIfPaused();
 
     BriefDatabase db;
-    BriefVocabulary *voc;
+    std::unique_ptr<BriefVocabulary> voc;
     BoWG::BoWGDatabase db_wg;
     std::map<BoWG::ItemID, std::vector<BRIEF::bitset>> map_des;
     std::map<BoWG::ItemID, std::vector<cv::KeyPoint>> map_kpts;
@@ -153,6 +177,15 @@ public:
     bool enable_gui;
     int frame_delay_ms;  // Delay between frames in milliseconds
     bool is_paused;      // Pause state
+
+private:
+    DetectionResult processImage(
+        const cv::Mat& image_bgr,
+        bool should_query,
+        int top_k,
+        int temporal_exclusion,
+        bool run_legacy_acceptance,
+        std::vector<int>* cor_row);
 };
 
 } // namespace BoWG
