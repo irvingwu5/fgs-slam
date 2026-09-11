@@ -1,0 +1,9 @@
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/BoWG.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/train_voc.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/demo.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/edit_cache.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/rebuild_cache.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/list_install_components.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/install.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/install/local.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/build/bowg-cpu/CMakeFiles/install/strip.dir

@@ -2,11 +2,16 @@
 cmake_minimum_required(VERSION 3.0)
 project(BoWG)
 
+if(POLICY CMP0057)
+  cmake_policy(SET CMP0057 NEW)
+endif()
+
 include(CTest)
 
 include(ExternalProject)
 option(BUILD_BOWG "Build BoWG" ON)  
 option(BUILD_DETECTOR "Build detector application" ON)
+option(BUILD_PYTHON_BINDINGS "Build the pybind11 BoWG module" ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
@@ -82,9 +87,6 @@ set(SRCS
   src/DVision/BRIEF.cpp
   src/DVision/FSolver.cpp
   src/DVision/BriefExtractor.cpp
-
-  # Train Vocabulary
-  src/Train_Voc/train_voc.cpp
   
   # VocabularyBinary
   src/VocabularyBinary.cpp)
@@ -119,6 +121,32 @@ if(BUILD_BOWG)
   )
   set_target_properties(train_voc PROPERTIES CXX_STANDARD 11)
 endif(BUILD_BOWG)
+
+if(BUILD_PYTHON_BINDINGS AND BUILD_BOWG)
+  find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -m pybind11 --cmakedir
+    RESULT_VARIABLE PYBIND11_CMAKEDIR_RESULT
+    OUTPUT_VARIABLE PYBIND11_CMAKEDIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT PYBIND11_CMAKEDIR_RESULT EQUAL 0)
+    message(FATAL_ERROR
+      "pybind11 is not installed for ${Python3_EXECUTABLE}; "
+      "install it with '${Python3_EXECUTABLE} -m pip install pybind11'")
+  endif()
+  set(PYBIND11_FINDPYTHON ON)
+  find_package(pybind11 CONFIG REQUIRED PATHS "${PYBIND11_CMAKEDIR}")
+  pybind11_add_module(_bowg python/bowg_pybind.cpp)
+  target_link_libraries(_bowg PRIVATE ${PROJECT_NAME} ${OpenCV_LIBS})
+  target_include_directories(_bowg PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    include/BoWG
+    include/DVision)
+  set_target_properties(_bowg PROPERTIES
+    CXX_STANDARD 11
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python")
+  install(TARGETS _bowg LIBRARY DESTINATION python)
+endif()
 
 if(BUILD_DETECTOR)
   add_executable(demo demo/demo.cpp)

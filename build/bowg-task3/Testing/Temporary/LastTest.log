@@ -1,0 +1,37 @@
+Start testing: Sep 10 22:21 CST
+----------------------------------------------------------
+1/1 Testing: bowg_facade
+1/1 Test: bowg_facade
+Command: "/home/wxy/Documents/PycharmProjects/FGS-SLAM/build/bowg-task3/test_bowg_facade"
+Directory: /home/wxy/Documents/PycharmProjects/FGS-SLAM/build/bowg-task3
+"bowg_facade" start time: Sep 10 22:21 CST
+Output:
+----------------------------------------------------------
+loop start load vocabulary
+word num: 310
+word num: 304
+word num: 310
+word num: 310
+loop start load vocabulary
+loop start load vocabulary
+word num: 310
+word num: 304
+word num: 310
+loop start load vocabulary
+word num: 310
+word num: 304
+word num: 310
+loop start load vocabulary
+word num: 310
+word num: 304
+word num: 310
+bowg_facade PASS
+<end of output>
+Test time =   1.08 sec
+----------------------------------------------------------
+Test Passed.
+"bowg_facade" end time: Sep 10 22:21 CST
+"bowg_facade" time elapsed: 00:00:01
+----------------------------------------------------------
+
+End testing: Sep 10 22:21 CST

@@ -1,0 +1,41 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGDatabase.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGDatabase.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGDetector.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGDetector.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGScoring.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGScoring.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGVector.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/BoWGVector.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/BowVector.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/BowVector.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/FBrief.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/FBrief.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/FeatureVector.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/FeatureVector.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/Parameters.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/Parameters.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/QueryResults.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/QueryResults.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/BoWG/ScoringObject.cpp.o"
+  "CMakeFiles/BoWG.dir/src/BoWG/ScoringObject.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/DUtils/Random.cpp.o"
+  "CMakeFiles/BoWG.dir/src/DUtils/Random.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/DUtils/Timestamp.cpp.o"
+  "CMakeFiles/BoWG.dir/src/DUtils/Timestamp.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/DVision/BRIEF.cpp.o"
+  "CMakeFiles/BoWG.dir/src/DVision/BRIEF.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/DVision/BriefExtractor.cpp.o"
+  "CMakeFiles/BoWG.dir/src/DVision/BriefExtractor.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/DVision/FSolver.cpp.o"
+  "CMakeFiles/BoWG.dir/src/DVision/FSolver.cpp.o.d"
+  "CMakeFiles/BoWG.dir/src/VocabularyBinary.cpp.o"
+  "CMakeFiles/BoWG.dir/src/VocabularyBinary.cpp.o.d"
+  "libBoWG.pdb"
+  "libBoWG.so"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/BoWG.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

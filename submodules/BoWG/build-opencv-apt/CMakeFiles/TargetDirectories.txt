@@ -1,0 +1,9 @@
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/BoWG.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/train_voc.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/demo.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/edit_cache.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/rebuild_cache.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/list_install_components.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/install.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/install/local.dir
+/home/wuxiangyu/Documents/PycharmProjects/FGS-SLAM/submodules/BoWG/build-opencv-apt/CMakeFiles/install/strip.dir
