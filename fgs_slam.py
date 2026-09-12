@@ -3,6 +3,8 @@
     solve selecting keyframe problem
 """
 import os
+import json
+import queue
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import torch
 import torch.multiprocessing as mp
@@ -22,6 +24,14 @@ from scene.shared_objs import SharedCam, SharedGaussians, SharedPoints, SharedTa
 from gaussian_renderer import render, network_gui
 from mp_Tracker import Tracker
 from mp_Mapper import Mapper
+from loop_closure.config import LoopClosureConfig
+from loop_closure.worker import (
+    loop_worker_main,
+    raise_for_loop_worker_failure,
+    record_unreported_worker_exit,
+    stop_processes_after_slam_child_failure,
+    worker_shutdown_stalled,
+)
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
@@ -87,6 +97,26 @@ class FGS_SLAM(SLAMParameters):
             mp.set_start_method('spawn', force=True)
         except RuntimeError:
             pass
+
+        self.loop_closure_config_path = getattr(args, "loop_closure_config", None)
+        self.loop_closure_config = None
+        self.loop_input_queue = None
+        self.loop_output_queue = None
+        self.loop_status_queue = None
+        self.loop_stop_event = None
+        if self.loop_closure_config_path:
+            loop_config = LoopClosureConfig.from_yaml(self.loop_closure_config_path)
+            if loop_config.enabled:
+                if loop_config.mode != "log_only":
+                    raise ValueError("Task 5 only supports loop closure mode: log_only")
+                if loop_config.queue_policy != "block":
+                    raise ValueError("Task 5 only supports loop closure queue_policy: block")
+                context = mp.get_context("spawn")
+                self.loop_closure_config = loop_config
+                self.loop_input_queue = context.Queue(maxsize=loop_config.queue_capacity)
+                self.loop_output_queue = context.Queue()
+                self.loop_status_queue = context.Queue()
+                self.loop_stop_event = context.Event()
         
         self.trajmanager = TrajManager(self.camera_parameters[8], self.dataset_path)
 
@@ -165,16 +195,184 @@ class FGS_SLAM(SLAMParameters):
     #   - self：当前类实例，提供并更新对象状态。
     # 输出：无显式返回值；输出体现为状态或外部资源更新。
     def run(self):
-        processes = []
-        for rank in range(2):
-            if rank == 0:
-                p = mp.Process(target=self.tracking, args=(rank, ))
-            elif rank == 1:
-                p = mp.Process(target=self.mapping, args=(rank, )) 
-            p.start()
-            processes.append(p)
-        for p in processes:
-            p.join()
+        context = mp.get_context("spawn")
+        tracking_process = context.Process(target=self.tracking, args=(0,))
+        mapping_process = context.Process(target=self.mapping, args=(1,))
+        loop_process = None
+        loop_statuses = []
+        loop_results = []
+
+        started_processes = []
+        try:
+            if self.loop_closure_config is not None:
+                loop_process = context.Process(
+                    target=loop_worker_main,
+                    args=(
+                        self.loop_closure_config.source_path,
+                        self.loop_input_queue,
+                        self.loop_output_queue,
+                        self.loop_status_queue,
+                        self.loop_stop_event,
+                    ),
+                    kwargs={
+                        "log_path": os.path.join(self.output_dir, "loop_keyframes.jsonl")
+                    },
+                )
+                loop_process.start()
+                started_processes.append(loop_process)
+
+            tracking_process.start()
+            started_processes.append(tracking_process)
+            mapping_process.start()
+            started_processes.append(mapping_process)
+        except BaseException:
+            if self.loop_stop_event is not None:
+                self.loop_stop_event.set()
+            for process in started_processes:
+                if process.is_alive():
+                    process.terminate()
+                process.join()
+            raise
+
+        observed_loop_records = 0
+        queue_full_since = None
+        while tracking_process.is_alive() or mapping_process.is_alive():
+            self._drain_loop_queues(loop_statuses, loop_results)
+            current_loop_records = len(loop_statuses) + len(loop_results)
+            if current_loop_records != observed_loop_records:
+                observed_loop_records = current_loop_records
+                queue_full_since = time.monotonic() if self._loop_input_is_full() else None
+            elif self._loop_input_is_full():
+                if queue_full_since is None:
+                    queue_full_since = time.monotonic()
+            else:
+                queue_full_since = None
+            if (
+                loop_process is not None
+                and loop_process.is_alive()
+                and queue_full_since is not None
+                and worker_shutdown_stalled(
+                    queue_full_since,
+                    self.loop_closure_config.worker_shutdown_timeout_s,
+                )
+            ):
+                self.loop_stop_event.set()
+                loop_process.terminate()
+                loop_process.join()
+                loop_statuses.append(
+                    {
+                        "status": "FAILED",
+                        "exception_type": "TimeoutError",
+                        "message": (
+                            "loop worker made no progress while its input queue "
+                            f"was full for {self.loop_closure_config.worker_shutdown_timeout_s} seconds"
+                        ),
+                        "traceback": "",
+                    }
+                )
+            if not tracking_process.is_alive() and tracking_process.exitcode not in (0, None):
+                stop_processes_after_slam_child_failure(
+                    [mapping_process, loop_process], self.loop_stop_event
+                )
+                break
+            if not mapping_process.is_alive() and mapping_process.exitcode not in (0, None):
+                stop_processes_after_slam_child_failure(
+                    [tracking_process, loop_process], self.loop_stop_event
+                )
+                break
+            if (
+                loop_process is not None
+                and not loop_process.is_alive()
+                and loop_process.exitcode not in (0, None)
+            ):
+                record_unreported_worker_exit(
+                    loop_process, loop_statuses, self.loop_stop_event
+                )
+            tracking_process.join(timeout=0.05)
+            mapping_process.join(timeout=0.05)
+        tracking_process.join()
+        mapping_process.join()
+
+        slam_child_failed = (
+            tracking_process.exitcode not in (0, None)
+            or mapping_process.exitcode not in (0, None)
+        )
+        if slam_child_failed and loop_process is not None and loop_process.is_alive():
+            stop_processes_after_slam_child_failure(
+                [loop_process], self.loop_stop_event
+            )
+
+        if loop_process is not None:
+            last_progress = time.monotonic()
+            observed_records = len(loop_statuses) + len(loop_results)
+            while loop_process.is_alive():
+                self._drain_loop_queues(loop_statuses, loop_results)
+                current_records = len(loop_statuses) + len(loop_results)
+                if current_records != observed_records:
+                    observed_records = current_records
+                    last_progress = time.monotonic()
+                if worker_shutdown_stalled(
+                    last_progress,
+                    self.loop_closure_config.worker_shutdown_timeout_s,
+                ):
+                    self.loop_stop_event.set()
+                    loop_process.terminate()
+                    loop_process.join()
+                    loop_statuses.append(
+                        {
+                            "status": "FAILED",
+                            "exception_type": "TimeoutError",
+                            "message": (
+                                "loop worker made no shutdown progress for "
+                                f"{self.loop_closure_config.worker_shutdown_timeout_s} seconds"
+                            ),
+                            "traceback": "",
+                        }
+                    )
+                    break
+                loop_process.join(timeout=0.05)
+            loop_process.join()
+            self._drain_loop_queues(loop_statuses, loop_results)
+            record_unreported_worker_exit(
+                loop_process, loop_statuses, self.loop_stop_event
+            )
+            self._write_loop_process_logs(loop_statuses, loop_results)
+
+        if tracking_process.exitcode != 0 or mapping_process.exitcode != 0:
+            raise RuntimeError(
+                "SLAM child process failed: "
+                f"tracker={tracking_process.exitcode}, mapper={mapping_process.exitcode}"
+            )
+        raise_for_loop_worker_failure(loop_statuses)
+
+    def _drain_loop_queues(self, statuses, results):
+        if self.loop_status_queue is None:
+            return
+        for source, destination in (
+            (self.loop_status_queue, statuses),
+            (self.loop_output_queue, results),
+        ):
+            while True:
+                try:
+                    destination.append(source.get_nowait())
+                except queue.Empty:
+                    break
+
+    def _write_loop_process_logs(self, statuses, results):
+        for filename, records in (
+            ("loop_worker_status.jsonl", statuses),
+            ("loop_retrieval.jsonl", results),
+        ):
+            path = os.path.join(self.output_dir, filename)
+            with open(path, "w", encoding="utf-8") as stream:
+                for record in records:
+                    stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+    def _loop_input_is_full(self):
+        try:
+            return self.loop_input_queue is not None and self.loop_input_queue.full()
+        except (AttributeError, NotImplementedError):
+            return False
 
     # 功能：获取与 get_test_image 对应的数据或状态。
     # 输入：
@@ -320,6 +518,11 @@ if __name__ == "__main__":
     parser.add_argument("--test", default=None)
     parser.add_argument("--save_results", action='store_true', default=None)
     parser.add_argument("--rerun_viewer", action="store_true", default=False)
+    parser.add_argument(
+        "--loop-closure-config",
+        default=None,
+        help="optional BoWG loop-closure YAML; enabled log_only configs add a worker",
+    )
     args = parser.parse_args()
 
     fgs_slam = FGS_SLAM(args)

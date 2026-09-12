@@ -204,3 +204,4 @@ class SLAMParameters():
         self.keyframe_freq = 10 # replica : 10, tum : 10
         self.train = True
         self.training_stage=0
+        self.loop_closure_config = None

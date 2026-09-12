@@ -174,6 +174,7 @@ class LoopClosureConfig:
     keyframe_source: str
     queue_capacity: int
     queue_policy: str
+    worker_shutdown_timeout_s: float
     retrieval: RetrievalConfig
     bowg: BoWGConfig
     geometry: GeometryConfig
@@ -451,6 +452,11 @@ class LoopClosureConfig:
             ),
             queue_policy=_require_choice(
                 root.get("queue_policy"), "queue_policy", {"block", "drop_newest"}
+            ),
+            worker_shutdown_timeout_s=_require_float(
+                root.get("worker_shutdown_timeout_s"),
+                "worker_shutdown_timeout_s",
+                minimum=0.0,
             ),
             retrieval=retrieval,
             bowg=bowg,

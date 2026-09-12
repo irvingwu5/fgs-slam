@@ -22,6 +22,11 @@ from gaussian_renderer import render, render_2, network_gui
 from tqdm import tqdm
 import copy
 from torchvision import transforms
+from loop_closure.worker import (
+    build_tracking_keyframe,
+    publish_loop_keyframe,
+    request_loop_worker_stop,
+)
 
 
 class Pipe():
@@ -137,13 +142,20 @@ class Tracker(SLAMParameters):
         self.final_pose = slam.final_pose
         self.demo = slam.demo
         self.is_mapping_process_started = slam.is_mapping_process_started
+        self.loop_input_queue = getattr(slam, "loop_input_queue", None)
+        self.loop_stop_event = getattr(slam, "loop_stop_event", None)
+        self.loop_keyframe_count = 0
 
     # 功能：执行 run 对应的计算或状态操作。
     # 输入：
     #   - self：当前类实例，提供并更新对象状态。
     # 输出：无显式返回值；输出体现为状态或外部资源更新。
     def run(self):
-        self.tracking()
+        try:
+            self.tracking()
+        finally:
+            if self.loop_input_queue is not None and self.loop_stop_event is not None:
+                request_loop_worker_stop(self.loop_input_queue, self.loop_stop_event)
 
     # 功能：逐帧执行 GICP 位姿估计、关键帧选择和目标地图更新。
     # 输入：
@@ -176,6 +188,8 @@ class Tracker(SLAMParameters):
         for ii in range(self.num_images):
             current_image = self.rgb_images.pop(0)
             current_depth_image = self.depth_images.pop(0)
+            current_image_bgr = np.ascontiguousarray(current_image)
+            publish_tracking_keyframe = False
 
             freq = self.generate_frequency(current_image)
             current_image = cv2.cvtColor(current_image, cv2.COLOR_BGR2RGB)
@@ -251,6 +265,7 @@ class Tracker(SLAMParameters):
                 self.shared_cam.cam_idx[0] = self.iteration_images
 
                 self.is_tracking_keyframe_shared[0] = 1
+                publish_tracking_keyframe = True
 
                 while self.demo[0]:
                     time.sleep(1e-15)
@@ -358,6 +373,7 @@ class Tracker(SLAMParameters):
                                                            tracking_mask, zero_filter_mapping, opacity_mask.reshape(-1))
 
                     self.is_tracking_keyframe_shared[0] = 1
+                    publish_tracking_keyframe = True
 
                     # Get new target point
                     while not self.target_gaussians_ready[0]:
@@ -388,6 +404,28 @@ class Tracker(SLAMParameters):
                                                            opacity_mask.reshape(-1))
 
                     self.is_mapping_keyframe_shared[0] = 1
+            if publish_tracking_keyframe and self.loop_input_queue is not None:
+                packet = build_tracking_keyframe(
+                    frame_id=self.iteration_images,
+                    keyframe_id=self.loop_keyframe_count,
+                    timestamp=float(self.iteration_images),
+                    image_bgr=current_image_bgr,
+                    depth_m=current_depth_image,
+                    K=self.cam_intrinsic,
+                    T_WC_raw=self.poses[-1],
+                )
+                metrics = publish_loop_keyframe(
+                    self.loop_input_queue, packet, self.loop_stop_event
+                )
+                if metrics is not None:
+                    self.loop_keyframe_count += 1
+                    if self.verbose:
+                        print(
+                            "BoWG enqueue: "
+                            f"frame={self.iteration_images}, "
+                            f"wait_ms={metrics['enqueue_wait_ms']:.3f}, "
+                            f"queue_depth={metrics['queue_depth']}"
+                        )
             pbar.update(1)
 
             self.iteration_images += 1
@@ -912,5 +950,3 @@ class Tracker(SLAMParameters):
         y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
         z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
         return torch.stack([w, x, y, z]).T
-
-
