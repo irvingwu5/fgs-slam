@@ -46,6 +46,8 @@ bowg:
 
 geometry:
   depth_trunc_m: 5.0
+  depth_neighborhood_radius: 1
+  depth_discontinuity_m: 0.1
   descriptor_ratio: 0.75
   min_matches: 30
   min_inliers: 24
@@ -53,9 +55,17 @@ geometry:
   ransac_threshold_m: 0.05
   ransac_probability: 0.999
   ransac_max_iterations: 1000
+  ransac_seed: 7
   min_image_coverage: 0.10
+  coverage_grid_rows: 4
+  coverage_grid_cols: 4
+  min_singular_value_ratio: 0.001
+  max_residual_median_m: 0.03
+  max_residual_p95_m: 0.05
   max_rotation_deg: 60.0
   max_translation_m: 5.0
+  information_translation_weight: 100.0
+  information_rotation_weight: 100.0
   use_gicp_refinement: false
 
 backend:

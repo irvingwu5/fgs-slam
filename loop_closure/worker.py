@@ -12,8 +12,8 @@ from typing import Callable
 import numpy as np
 
 from .config import LoopClosureConfig
-from .keyframe_store import KeyframeStore
-from .types import LoopKeyframe
+from .keyframe_store import KeyframeStore, StoredKeyframe
+from .types import LoopConstraint, LoopKeyframe
 
 
 _STOP_MESSAGE = "__FGS_SLAM_LOOP_WORKER_STOP__"
@@ -176,6 +176,7 @@ def loop_worker_main(
     stop_event,
     *,
     engine_factory: Callable | None = None,
+    verifier_factory: Callable | None = None,
     log_path: str | Path | None = None,
 ) -> None:
     """Own one BoWG engine and process accepted keyframes in FIFO order."""
@@ -186,7 +187,12 @@ def loop_worker_main(
             from .bowg import BoWGEngine
 
             engine_factory = BoWGEngine
+        if verifier_factory is None:
+            from .geometric_verifier import RGBDGeometricVerifier
+
+            verifier_factory = RGBDGeometricVerifier
         engine = engine_factory(config.source_path)
+        verifier = verifier_factory(config.geometry)
         store = KeyframeStore(log_path)
         status_queue.put({"status": "STARTED"})
 
@@ -205,6 +211,17 @@ def loop_worker_main(
                 temporal_exclusion=config.retrieval.temporal_exclusion,
             )
             retrieval = replace(native_result, frame_id=packet.frame_id)
+            current = StoredKeyframe(retrieval.entry_id, packet, retrieval)
+            verifications: list[dict[str, object]] = []
+            accepted_constraint: dict[str, object] | None = None
+            for candidate in retrieval.candidates:
+                old = store.by_entry_id(candidate.entry_id)
+                constraint = verifier.verify(old, current, candidate.score)
+                serialized = _constraint_to_dict(constraint, candidate.score)
+                verifications.append(serialized)
+                if constraint.verification_status == "accepted":
+                    accepted_constraint = serialized
+                    break
             store.append(packet, retrieval)
             processed += 1
             output_queue.put(
@@ -216,6 +233,8 @@ def loop_worker_main(
                         {"entry_id": item.entry_id, "score": item.score}
                         for item in retrieval.candidates
                     ],
+                    "verifications": verifications,
+                    "accepted_constraint": accepted_constraint,
                     "descriptor_config_hash": retrieval.descriptor_config_hash,
                     "extract_ms": retrieval.extract_ms,
                     "query_ms": retrieval.query_ms,
@@ -237,6 +256,25 @@ def loop_worker_main(
                 "traceback": traceback.format_exc(),
             }
         )
+
+
+def _constraint_to_dict(
+    constraint: LoopConstraint, score: float
+) -> dict[str, object]:
+    return {
+        "id_old": constraint.id_old,
+        "id_cur": constraint.id_cur,
+        "bowg_score": float(score),
+        "T_ColdCcur": constraint.T_ColdCcur.tolist(),
+        "information": constraint.information.tolist(),
+        "n_matches": constraint.n_matches,
+        "n_inliers": constraint.n_inliers,
+        "inlier_ratio": constraint.inlier_ratio,
+        "residual_median_m": constraint.residual_median_m,
+        "residual_p95_m": constraint.residual_p95_m,
+        "image_coverage": constraint.image_coverage,
+        "verification_status": constraint.verification_status,
+    }
 
 
 def _safe_qsize(value) -> int | None:

@@ -142,6 +142,8 @@ class BoWGConfig:
 @dataclass(frozen=True)
 class GeometryConfig:
     depth_trunc_m: float
+    depth_neighborhood_radius: int
+    depth_discontinuity_m: float
     descriptor_ratio: float
     min_matches: int
     min_inliers: int
@@ -149,9 +151,17 @@ class GeometryConfig:
     ransac_threshold_m: float
     ransac_probability: float
     ransac_max_iterations: int
+    ransac_seed: int
     min_image_coverage: float
+    coverage_grid_rows: int
+    coverage_grid_cols: int
+    min_singular_value_ratio: float
+    max_residual_median_m: float
+    max_residual_p95_m: float
     max_rotation_deg: float
     max_translation_m: float
+    information_translation_weight: float
+    information_rotation_weight: float
     use_gicp_refinement: bool
 
 
@@ -347,6 +357,15 @@ class LoopClosureConfig:
                 "geometry.depth_trunc_m",
                 minimum=0.0,
             ),
+            depth_neighborhood_radius=_require_int(
+                geometry_data.get("depth_neighborhood_radius"),
+                "geometry.depth_neighborhood_radius",
+            ),
+            depth_discontinuity_m=_require_float(
+                geometry_data.get("depth_discontinuity_m"),
+                "geometry.depth_discontinuity_m",
+                minimum=0.0,
+            ),
             descriptor_ratio=_require_float(
                 geometry_data.get("descriptor_ratio"),
                 "geometry.descriptor_ratio",
@@ -374,15 +393,45 @@ class LoopClosureConfig:
                 "geometry.ransac_probability",
                 minimum=0.0,
                 maximum=1.0,
+                maximum_inclusive=False,
             ),
             ransac_max_iterations=_require_int(
                 geometry_data.get("ransac_max_iterations"),
                 "geometry.ransac_max_iterations",
                 1,
             ),
+            ransac_seed=_require_int(
+                geometry_data.get("ransac_seed"), "geometry.ransac_seed"
+            ),
             min_image_coverage=_require_unit_interval(
                 geometry_data.get("min_image_coverage"),
                 "geometry.min_image_coverage",
+            ),
+            coverage_grid_rows=_require_int(
+                geometry_data.get("coverage_grid_rows"),
+                "geometry.coverage_grid_rows",
+                1,
+            ),
+            coverage_grid_cols=_require_int(
+                geometry_data.get("coverage_grid_cols"),
+                "geometry.coverage_grid_cols",
+                1,
+            ),
+            min_singular_value_ratio=_require_float(
+                geometry_data.get("min_singular_value_ratio"),
+                "geometry.min_singular_value_ratio",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            max_residual_median_m=_require_float(
+                geometry_data.get("max_residual_median_m"),
+                "geometry.max_residual_median_m",
+                minimum=0.0,
+            ),
+            max_residual_p95_m=_require_float(
+                geometry_data.get("max_residual_p95_m"),
+                "geometry.max_residual_p95_m",
+                minimum=0.0,
             ),
             max_rotation_deg=_require_float(
                 geometry_data.get("max_rotation_deg"),
@@ -395,6 +444,16 @@ class LoopClosureConfig:
                 "geometry.max_translation_m",
                 minimum=0.0,
             ),
+            information_translation_weight=_require_float(
+                geometry_data.get("information_translation_weight"),
+                "geometry.information_translation_weight",
+                minimum=0.0,
+            ),
+            information_rotation_weight=_require_float(
+                geometry_data.get("information_rotation_weight"),
+                "geometry.information_rotation_weight",
+                minimum=0.0,
+            ),
             use_gicp_refinement=_require_bool(
                 geometry_data.get("use_gicp_refinement"),
                 "geometry.use_gicp_refinement",
@@ -402,6 +461,11 @@ class LoopClosureConfig:
         )
         if geometry.min_inliers > geometry.min_matches:
             raise ValueError("geometry.min_inliers must not exceed geometry.min_matches")
+        if geometry.max_residual_p95_m < geometry.max_residual_median_m:
+            raise ValueError(
+                "geometry.max_residual_p95_m must not be below "
+                "geometry.max_residual_median_m"
+            )
 
         backend_data = _require_mapping(root.get("backend"), "backend")
         backend = BackendConfig(
