@@ -1,6 +1,7 @@
 opencv-contrib-python
 open3d
 scipy
+gtsam==4.2
 tqdm
 torchmetrics
 plyfile

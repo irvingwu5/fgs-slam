@@ -76,4 +76,10 @@ backend:
   odometry_rotation_weight: 100.0
   loop_translation_weight: 100.0
   loop_rotation_weight: 100.0
-  max_iterations: 100
+  max_loop_chi2: 100.0
+  isam2:
+    relinearize_threshold: 0.1
+    relinearize_skip: 1
+    factorization: CHOLESKY
+    cache_linearized_factors: true
+    extra_update_steps: 0

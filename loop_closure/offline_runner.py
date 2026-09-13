@@ -7,14 +7,14 @@ import csv
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 import numpy as np
 import yaml
 
 from .config import LoopClosureConfig
-from .keyframe_store import KeyframeStore, SCHEMA_VERSION
-from .types import LoopKeyframe, RetrievalResult
+from .keyframe_store import KeyframeStore, SCHEMA_VERSION, StoredKeyframe
+from .types import LoopConstraint, LoopKeyframe, RetrievalResult
 
 
 class RetrievalEngine(Protocol):
@@ -45,11 +45,27 @@ def run_offline(
     *,
     ground_truth_path: str | Path | None = None,
     engine_factory: Callable[[str | Path], RetrievalEngine] | None = None,
+    verifier_factory: Callable | None = None,
+    backend_factory: Callable | None = None,
 ) -> dict[str, Any]:
     """Run ordered retrieval and return aggregate evaluation metrics."""
     config = LoopClosureConfig.from_yaml(config_path)
     entries = _load_manifest(manifest_path)
     ground_truth = _load_ground_truth(ground_truth_path)
+
+    verifier = None
+    backend = None
+    if config.backend.enabled:
+        if verifier_factory is None:
+            from .geometric_verifier import RGBDGeometricVerifier
+
+            verifier_factory = RGBDGeometricVerifier
+        if backend_factory is None:
+            from .pose_graph import PoseGraphBackend
+
+            backend_factory = PoseGraphBackend
+        verifier = verifier_factory(config.geometry)
+        backend = backend_factory(config.backend)
 
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=False)
@@ -63,6 +79,12 @@ def run_offline(
     retrieval_path = destination / "retrieval.jsonl"
     timing_path = destination / "timing.csv"
     evaluations: list[dict[str, Any]] = []
+    graph_metadata: dict[int, dict[str, Any]] = {}
+    optimization_runs = []
+    active_loops = 0
+    quarantined_loops = 0
+    loops_since_optimization = 0
+    final_graph_result = None
     with retrieval_path.open("w", encoding="utf-8") as retrieval_stream, timing_path.open(
         "w", encoding="utf-8", newline=""
     ) as timing_stream:
@@ -78,6 +100,7 @@ def run_offline(
                 temporal_exclusion=config.retrieval.temporal_exclusion,
             )
             retrieval = replace(native_result, frame_id=packet.frame_id)
+            current = StoredKeyframe(retrieval.entry_id, packet, retrieval)
             candidate_rows = [
                 {
                     "entry_id": candidate.entry_id,
@@ -92,6 +115,66 @@ def run_offline(
             if evaluation is not None:
                 evaluations.append(evaluation)
 
+            verification_rows: list[dict[str, Any]] = []
+            accepted_constraint: LoopConstraint | None = None
+            loop_admission = None
+            if backend is not None:
+                assert verifier is not None
+                backend.add_node(retrieval.entry_id, packet.T_WC_raw)
+                graph_metadata[retrieval.entry_id] = {
+                    "frame_id": packet.frame_id,
+                    "keyframe_id": packet.keyframe_id,
+                    "timestamp": packet.timestamp,
+                }
+                if retrieval.entry_id:
+                    previous = store.by_entry_id(retrieval.entry_id - 1)
+                    odometry = (
+                        np.linalg.inv(previous.packet.T_WC_raw) @ packet.T_WC_raw
+                    )
+                    information = np.diag(
+                        [config.backend.odometry_translation_weight] * 3
+                        + [config.backend.odometry_rotation_weight] * 3
+                    ).astype(np.float64)
+                    backend.add_odometry(
+                        retrieval.entry_id - 1,
+                        retrieval.entry_id,
+                        odometry,
+                        information,
+                    )
+                for candidate in retrieval.candidates:
+                    constraint = verifier.verify(
+                        store.by_entry_id(candidate.entry_id),
+                        current,
+                        candidate.score,
+                    )
+                    verification_rows.append(
+                        _constraint_to_dict(constraint, candidate.score)
+                    )
+                    if constraint.verification_status == "accepted":
+                        accepted_constraint = constraint
+                        break
+                if accepted_constraint is not None:
+                    admission = backend.add_loop(accepted_constraint)
+                    loop_admission = {
+                        "status": admission.status,
+                        "chi2": admission.chi2,
+                        "edge_index": admission.edge_index,
+                    }
+                    if admission.status == "accepted":
+                        active_loops += 1
+                        loops_since_optimization += 1
+                    else:
+                        quarantined_loops += 1
+                if (
+                    loops_since_optimization
+                    >= config.backend.optimize_every_n_loops
+                ):
+                    final_graph_result = backend.optimize()
+                    optimization_runs.append(
+                        _pose_graph_result_to_dict(final_graph_result)
+                    )
+                    loops_since_optimization = 0
+
             store.append(packet, retrieval)
             record: dict[str, Any] = {
                 "schema_version": SCHEMA_VERSION,
@@ -102,6 +185,9 @@ def run_offline(
                 "descriptor_config_hash": retrieval.descriptor_config_hash,
                 "evaluation": evaluation,
             }
+            if backend is not None:
+                record["verifications"] = verification_rows
+                record["loop_admission"] = loop_admission
             retrieval_stream.write(
                 json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
                 + "\n"
@@ -117,8 +203,179 @@ def run_offline(
             )
 
     metrics = _aggregate_metrics(evaluations, ground_truth is not None)
+    if backend is not None:
+        final_update = backend.optimize()
+        if final_update.status == "optimizer_terminal_failure" and final_graph_result is not None:
+            final_graph_result = replace(
+                final_graph_result,
+                optimized_T_WC=backend.current_poses(),
+            )
+        elif final_update.status != "no_pending_updates":
+            final_graph_result = final_update
+            optimization_runs.append(_pose_graph_result_to_dict(final_graph_result))
+        elif final_graph_result is None:
+            final_graph_result = final_update
+        else:
+            final_graph_result = replace(
+                final_graph_result,
+                optimized_T_WC=backend.current_poses(),
+            )
+        assert final_graph_result is not None
+        metrics["pose_graph"] = {
+            "active_loops": active_loops,
+            "quarantined_loops": quarantined_loops,
+            "optimization_runs": len(optimization_runs),
+            "final_success": final_graph_result.success,
+        }
+        _write_graph_outputs(
+            destination,
+            backend,
+            graph_metadata,
+            optimization_runs,
+            final_graph_result,
+        )
     _write_metadata(destination, config, metrics)
     return metrics
+
+
+def _constraint_to_dict(
+    constraint: LoopConstraint, score: float
+) -> dict[str, Any]:
+    return {
+        "id_old": constraint.id_old,
+        "id_cur": constraint.id_cur,
+        "bowg_score": float(score),
+        "T_ColdCcur": constraint.T_ColdCcur.tolist(),
+        "information": constraint.information.tolist(),
+        "n_matches": constraint.n_matches,
+        "n_inliers": constraint.n_inliers,
+        "inlier_ratio": constraint.inlier_ratio,
+        "residual_median_m": constraint.residual_median_m,
+        "residual_p95_m": constraint.residual_p95_m,
+        "image_coverage": constraint.image_coverage,
+        "verification_status": constraint.verification_status,
+    }
+
+
+def _pose_graph_result_to_dict(result) -> dict[str, Any]:
+    return {
+        "success": result.success,
+        "status": result.status,
+        "iterations": result.iterations,
+        "initial_cost": result.initial_cost,
+        "final_cost": result.final_cost,
+        "initial_residual_norm": result.initial_residual_norm,
+        "final_residual_norm": result.final_residual_norm,
+        "solver": result.solver,
+        "gtsam_version": result.gtsam_version,
+        "update_count": result.update_count,
+        "update_ms": result.update_ms,
+        "estimate_ms": result.estimate_ms,
+        "variables_relinearized": result.variables_relinearized,
+        "variables_reeliminated": result.variables_reeliminated,
+    }
+
+
+def _write_graph_outputs(
+    destination: Path,
+    backend,
+    metadata: dict[int, dict[str, Any]],
+    optimization_runs: list[dict[str, Any]],
+    final_result,
+) -> None:
+    raw = backend.raw_poses()
+    _write_tum_trajectory(destination / "raw_trajectory.txt", raw, metadata)
+    _write_tum_trajectory(
+        destination / "optimized_trajectory.txt",
+        final_result.optimized_T_WC,
+        metadata,
+    )
+    edge_rows = []
+    for edge in backend.edge_records():
+        verification = None
+        if edge.verification is not None:
+            verification = {
+                name: value.tolist() if isinstance(value, np.ndarray) else value
+                for name, value in edge.verification.items()
+            }
+        edge_rows.append(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "i": edge.i,
+                "j": edge.j,
+                "frame_id_i": metadata[edge.i]["frame_id"],
+                "frame_id_j": metadata[edge.j]["frame_id"],
+                "keyframe_id_i": metadata[edge.i]["keyframe_id"],
+                "keyframe_id_j": metadata[edge.j]["keyframe_id"],
+                "edge_type": edge.edge_type,
+                "Z_CiCj": edge.Z_CiCj.tolist(),
+                "information": edge.information.tolist(),
+                "status": edge.status,
+                "chi2": edge.chi2,
+                "reason": edge.reason,
+                "verification": verification,
+            }
+        )
+    _write_jsonl_atomic(destination / "edges.jsonl", edge_rows)
+    _write_json_atomic(
+        destination / "optimization_report.json",
+        {
+            "schema_version": SCHEMA_VERSION,
+            "runs": optimization_runs,
+            "final": _pose_graph_result_to_dict(final_result),
+        },
+    )
+
+
+def _write_tum_trajectory(
+    path: Path,
+    poses: Mapping[int, np.ndarray],
+    metadata: dict[int, dict[str, Any]],
+) -> None:
+    lines = []
+    for node_id in sorted(poses):
+        pose = poses[node_id]
+        quaternion = _rotation_to_xyzw(pose[:3, :3])
+        values = [
+            metadata[node_id]["timestamp"],
+            *pose[:3, 3],
+            *quaternion,
+        ]
+        lines.append(" ".join(f"{float(value):.17g}" for value in values))
+    _write_text_atomic(path, "\n".join(lines) + ("\n" if lines else ""))
+
+
+def _rotation_to_xyzw(rotation: np.ndarray) -> np.ndarray:
+    from scipy.spatial.transform import Rotation
+
+    quaternion = Rotation.from_matrix(
+        np.array(rotation, dtype=np.float64, copy=True)
+    ).as_quat()
+    if quaternion[3] < 0.0:
+        quaternion = -quaternion
+    return quaternion / np.linalg.norm(quaternion)
+
+
+def _write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
+    content = "".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        + "\n"
+        for row in rows
+    )
+    _write_text_atomic(path, content)
+
+
+def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    _write_text_atomic(
+        path,
+        json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n",
+    )
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
 
 
 def _load_manifest(path: str | Path) -> list[ManifestEntry]:
@@ -335,6 +592,9 @@ def main() -> None:
         ground_truth_path=arguments.ground_truth,
     )
     print(json.dumps(metrics, sort_keys=True))
+    pose_graph = metrics.get("pose_graph")
+    if pose_graph is not None and not pose_graph.get("final_success", False):
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

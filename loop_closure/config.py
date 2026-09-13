@@ -166,6 +166,15 @@ class GeometryConfig:
 
 
 @dataclass(frozen=True)
+class ISAM2Config:
+    relinearize_threshold: float
+    relinearize_skip: int
+    factorization: str
+    cache_linearized_factors: bool
+    extra_update_steps: int
+
+
+@dataclass(frozen=True)
 class BackendConfig:
     enabled: bool
     optimize_every_n_loops: int
@@ -174,7 +183,8 @@ class BackendConfig:
     odometry_rotation_weight: float
     loop_translation_weight: float
     loop_rotation_weight: float
-    max_iterations: int
+    max_loop_chi2: float
+    isam2: ISAM2Config
 
 
 @dataclass(frozen=True)
@@ -468,6 +478,49 @@ class LoopClosureConfig:
             )
 
         backend_data = _require_mapping(root.get("backend"), "backend")
+        if "max_iterations" in backend_data:
+            raise ValueError(
+                "backend.max_iterations was removed with the SciPy optimizer"
+            )
+        isam2_data = _require_mapping(backend_data.get("isam2"), "backend.isam2")
+        allowed_isam2_fields = {
+            "relinearize_threshold",
+            "relinearize_skip",
+            "factorization",
+            "cache_linearized_factors",
+            "extra_update_steps",
+        }
+        unknown_isam2_fields = sorted(set(isam2_data) - allowed_isam2_fields)
+        if unknown_isam2_fields:
+            raise ValueError(
+                f"unknown backend.isam2.{unknown_isam2_fields[0]} field"
+            )
+        isam2 = ISAM2Config(
+            relinearize_threshold=_require_float(
+                isam2_data.get("relinearize_threshold"),
+                "backend.isam2.relinearize_threshold",
+                minimum=0.0,
+            ),
+            relinearize_skip=_require_int(
+                isam2_data.get("relinearize_skip"),
+                "backend.isam2.relinearize_skip",
+                1,
+            ),
+            factorization=_require_choice(
+                isam2_data.get("factorization"),
+                "backend.isam2.factorization",
+                {"CHOLESKY", "QR"},
+            ),
+            cache_linearized_factors=_require_bool(
+                isam2_data.get("cache_linearized_factors"),
+                "backend.isam2.cache_linearized_factors",
+            ),
+            extra_update_steps=_require_int(
+                isam2_data.get("extra_update_steps"),
+                "backend.isam2.extra_update_steps",
+                0,
+            ),
+        )
         backend = BackendConfig(
             enabled=_require_bool(backend_data.get("enabled"), "backend.enabled"),
             optimize_every_n_loops=_require_int(
@@ -498,9 +551,12 @@ class LoopClosureConfig:
                 "backend.loop_rotation_weight",
                 minimum=0.0,
             ),
-            max_iterations=_require_int(
-                backend_data.get("max_iterations"), "backend.max_iterations", 1
+            max_loop_chi2=_require_float(
+                backend_data.get("max_loop_chi2"),
+                "backend.max_loop_chi2",
+                minimum=0.0,
             ),
+            isam2=isam2,
         )
 
         return cls(
